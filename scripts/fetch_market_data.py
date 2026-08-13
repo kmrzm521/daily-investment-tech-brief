@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch evidence for the daily-investment-tech-brief OpenClaw skill.
 
-V1 deliberately uses AKShare-accessible sources so it can run on a mainland
+V1.1 uses AKShare-accessible sources with multi-source fallbacks so it can run on a mainland
 China server without Google, ChatGPT, Cloudflare, or an overseas VPS.
 
 The script prints JSON to stdout. Individual source failures are recorded in
@@ -94,6 +94,23 @@ def clean_text(value: Any) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def parse_number(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return None if math.isnan(number) or math.isinf(number) else number
+    text = clean_text(value).replace(",", "")
+    if not text:
+        return None
+    if text.endswith("%"):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def infer_news_category(text: str) -> str:
@@ -221,24 +238,17 @@ def find_column(columns: Iterable[str], candidates: Sequence[str], suffixes: Seq
 def normalize_fund_flow(df: Any, period: str, top_n: int = 12) -> Dict[str, Any]:
     if df is None or getattr(df, "empty", True):
         return {"period": period, "top_inflow": [], "top_outflow": []}
-
     columns = [str(c) for c in df.columns]
     amount_col = find_column(columns, [f"{period}主力净流入-净额", "主力净流入-净额"], suffixes=("主力净流入-净额",))
     ratio_col = find_column(columns, [f"{period}主力净流入-净占比", "主力净流入-净占比"], suffixes=("主力净流入-净占比",))
     change_col = find_column(columns, [f"{period}涨跌幅", "今日涨跌幅", "涨跌幅"], suffixes=("涨跌幅",))
     leader_col = find_column(columns, [f"{period}主力净流入最大股", "今日主力净流入最大股", "主力净流入最大股"], suffixes=("主力净流入最大股",))
-
     if amount_col is None:
         raise ValueError(f"Cannot find main fund-flow amount column for period={period}; columns={columns}")
-
     rows: List[Dict[str, Any]] = []
     for raw in df_records(df):
-        amount = raw.get(amount_col)
-        try:
-            amount_num = float(amount) if amount is not None else None
-        except (TypeError, ValueError):
-            amount_num = None
-        if amount_num is None or math.isnan(amount_num):
+        amount_num = parse_number(raw.get(amount_col))
+        if amount_num is None:
             continue
         rows.append({
             "sector": clean_text(raw.get("名称")),
@@ -248,10 +258,52 @@ def normalize_fund_flow(df: Any, period: str, top_n: int = 12) -> Dict[str, Any]
             "main_net_inflow_ratio_pct": safe_scalar(raw.get(ratio_col)) if ratio_col else None,
             "top_contributor": clean_text(raw.get(leader_col)) if leader_col else "",
         })
-
     top_in = sorted(rows, key=lambda x: x["main_net_inflow"], reverse=True)[:top_n]
     top_out = sorted(rows, key=lambda x: x["main_net_inflow"])[:top_n]
     return {"period": period, "top_inflow": top_in, "top_outflow": top_out, "sector_count": len(rows)}
+
+
+def normalize_fund_flow_ths(df: Any, period: str, top_n: int = 12) -> Dict[str, Any]:
+    if df is None or getattr(df, "empty", True):
+        return {"period": period, "top_inflow": [], "top_outflow": []}
+    rows: List[Dict[str, Any]] = []
+    for raw in df_records(df):
+        sector = clean_text(raw.get("行业"))
+        amount_yi = parse_number(raw.get("净额"))
+        if not sector or amount_yi is None:
+            continue
+        change = parse_number(raw.get("行业-涨跌幅"))
+        if change is None:
+            change = parse_number(raw.get("阶段涨跌幅"))
+        rows.append({
+            "sector": sector,
+            "change_pct": change,
+            "main_net_inflow": amount_yi * 100_000_000,
+            "main_net_inflow_yi": round(amount_yi, 3),
+            "main_net_inflow_ratio_pct": None,
+            "top_contributor": clean_text(raw.get("领涨股")),
+        })
+    top_in = sorted(rows, key=lambda x: x["main_net_inflow"], reverse=True)[:top_n]
+    top_out = sorted(rows, key=lambda x: x["main_net_inflow"])[:top_n]
+    return {"period": period, "top_inflow": top_in, "top_outflow": top_out, "sector_count": len(rows)}
+
+
+def fetch_us_indices_sina(ak_module: Any) -> List[Dict[str, Any]]:
+    symbols = [(".INX", "标普500"), (".IXIC", "纳斯达克综合指数"), (".DJI", "道琼斯工业平均指数"), (".NDX", "纳斯达克100")]
+    rows: List[Dict[str, Any]] = []
+    for symbol, name in symbols:
+        records = df_records(ak_module.index_us_stock_sina(symbol=symbol))
+        if not records:
+            continue
+        latest = records[-1]
+        previous = records[-2] if len(records) >= 2 else None
+        close = parse_number(latest.get("close"))
+        prev_close = parse_number(previous.get("close")) if previous else None
+        change_pct = None
+        if close is not None and prev_close not in (None, 0):
+            change_pct = round((close / prev_close - 1) * 100, 4)
+        rows.append({"代码": symbol, "名称": name, "最新价": close, "涨跌幅": change_pct, "日期": safe_scalar(latest.get("date")), "来源": "新浪财经"})
+    return rows
 
 
 def persistent_flow_hints(fund_flow: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -275,7 +327,6 @@ def fetch_all(ak_module: Any = None, news_limit: int = 80, fund_top_n: int = 12)
     errors: List[Dict[str, str]] = []
     all_news: List[Dict[str, Any]] = []
     source_counts: Dict[str, int] = {}
-
     news_sources = [
         ("eastmoney_global_news", lambda: normalize_news_em(ak_module.stock_info_global_em())),
         ("cls_telegraph", lambda: normalize_news_cls(ak_module.stock_info_global_cls(symbol="重点"))),
@@ -291,40 +342,74 @@ def fetch_all(ak_module: Any = None, news_limit: int = 80, fund_top_n: int = 12)
             errors.append({"source": name, "error": f"{type(exc).__name__}: {exc}"})
 
     market: Dict[str, Any] = {"global_indices": [], "a_share_indices": []}
+    market_sources: Dict[str, str] = {"global_indices": "", "a_share_indices": ""}
     try:
         market["global_indices"] = select_named_rows(ak_module.index_global_spot_em(), GLOBAL_INDEX_KEYWORDS)
+        if market["global_indices"]:
+            market_sources["global_indices"] = "eastmoney"
     except Exception as exc:
-        errors.append({"source": "global_indices", "error": f"{type(exc).__name__}: {exc}"})
+        errors.append({"source": "global_indices_eastmoney", "error": f"{type(exc).__name__}: {exc}"})
+    if not market["global_indices"]:
+        try:
+            market["global_indices"] = fetch_us_indices_sina(ak_module)
+            if market["global_indices"]:
+                market_sources["global_indices"] = "sina_us_indices"
+        except Exception as exc:
+            errors.append({"source": "global_indices_sina", "error": f"{type(exc).__name__}: {exc}"})
 
     try:
         market["a_share_indices"] = select_named_rows(ak_module.stock_zh_index_spot_em(symbol="沪深重要指数"), A_INDEX_KEYWORDS)
+        if market["a_share_indices"]:
+            market_sources["a_share_indices"] = "eastmoney"
     except Exception as exc:
-        errors.append({"source": "a_share_indices", "error": f"{type(exc).__name__}: {exc}"})
+        errors.append({"source": "a_share_indices_eastmoney", "error": f"{type(exc).__name__}: {exc}"})
+    if not market["a_share_indices"]:
+        try:
+            market["a_share_indices"] = select_named_rows(ak_module.stock_zh_index_spot_sina(), A_INDEX_KEYWORDS)
+            if market["a_share_indices"]:
+                market_sources["a_share_indices"] = "sina"
+        except Exception as exc:
+            errors.append({"source": "a_share_indices_sina", "error": f"{type(exc).__name__}: {exc}"})
 
     fund_flow: Dict[str, Dict[str, Any]] = {}
+    fund_flow_sources: Dict[str, str] = {}
+    ths_period_map = {"今日": "即时", "5日": "5日排行", "10日": "10日排行"}
     for period in ("今日", "5日", "10日"):
         source_name = f"industry_fund_flow_{period}"
         try:
             df = ak_module.stock_sector_fund_flow_rank(indicator=period, sector_type="行业资金流")
             fund_flow[period] = normalize_fund_flow(df, period, top_n=fund_top_n)
+            if fund_flow[period].get("sector_count"):
+                fund_flow_sources[period] = "eastmoney"
         except Exception as exc:
-            fund_flow[period] = {"period": period, "top_inflow": [], "top_outflow": []}
-            errors.append({"source": source_name, "error": f"{type(exc).__name__}: {exc}"})
+            errors.append({"source": f"{source_name}_eastmoney", "error": f"{type(exc).__name__}: {exc}"})
+        if not fund_flow.get(period, {}).get("sector_count"):
+            try:
+                df = ak_module.stock_fund_flow_industry(symbol=ths_period_map[period])
+                fund_flow[period] = normalize_fund_flow_ths(df, period, top_n=fund_top_n)
+                if fund_flow[period].get("sector_count"):
+                    fund_flow_sources[period] = "tonghuashun"
+            except Exception as exc:
+                fund_flow[period] = {"period": period, "top_inflow": [], "top_outflow": []}
+                errors.append({"source": f"{source_name}_tonghuashun", "error": f"{type(exc).__name__}: {exc}"})
 
+    hints = persistent_flow_hints(fund_flow)
     now = shanghai_now()
     payload = {
         "meta": {
             "generated_at": now.isoformat(timespec="seconds"),
             "timezone": "Asia/Shanghai",
-            "collector": "daily-investment-tech-brief-v1",
+            "collector": "daily-investment-tech-brief-v1.1",
             "akshare_version": clean_text(getattr(ak_module, "__version__", "unknown")),
             "news_source_counts": source_counts,
             "news_selected_count": 0,
+            "market_sources": market_sources,
+            "fund_flow_sources": fund_flow_sources,
             "fund_flow_note": "主力资金流为数据供应商按成交特征统计的指标，不等同于交易所官方披露的真实资金进出。",
         },
         "news": [],
         "market": market,
-        "fund_flow": {"industry": fund_flow, "hints": persistent_flow_hints(fund_flow)},
+        "fund_flow": {"industry": fund_flow, "hints": hints},
         "errors": errors,
     }
     payload.update(_with_ranked_news(all_news, news_limit))
@@ -358,7 +443,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except Exception as exc:
         sys.stderr.write(f"ERROR: {exc}\n")
         return 2
-
     text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
         path = Path(args.output).expanduser()
