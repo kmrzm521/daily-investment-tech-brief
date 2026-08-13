@@ -1,29 +1,8 @@
-# daily-investment-tech-brief V1
+# daily-investment-tech-brief V1.1
 
 一个面向中国大陆服务器环境的 OpenClaw Skill：抓取全球/A股财经资讯、主要指数和 A 股行业资金流，交给 OpenClaw 当前配置的模型生成每日投资科技晨报。
 
-## 一条命令安装（推荐）
-
-在上海服务器执行：
-
-```bash
-rm -rf ~/.openclaw/workspace/skills/daily-investment-tech-brief && git clone --depth 1 https://github.com/kmrzm521/daily-investment-tech-brief.git ~/.openclaw/workspace/skills/daily-investment-tech-brief && python3 -m pip install -r ~/.openclaw/workspace/skills/daily-investment-tech-brief/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-安装后验证：
-
-```bash
-openclaw skills list
-python3 ~/.openclaw/workspace/skills/daily-investment-tech-brief/scripts/fetch_market_data.py --pretty
-```
-
-如当前 OpenClaw 会话没有刷新 Skill，开启新会话或执行：
-
-```bash
-openclaw gateway restart
-```
-
-## 项目结构
+## 目录
 
 ```text
 daily-investment-tech-brief/
@@ -35,36 +14,105 @@ daily-investment-tech-brief/
     └── test_fetch_market_data.py
 ```
 
-## 环境要求
+## 一条命令安装（推荐）
+
+在上海服务器执行：
+
+```bash
+rm -rf ~/.openclaw/workspace/skills/daily-investment-tech-brief && git clone --depth 1 https://github.com/kmrzm521/daily-investment-tech-brief.git ~/.openclaw/workspace/skills/daily-investment-tech-brief && python3 -m pip install -r ~/.openclaw/workspace/skills/daily-investment-tech-brief/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+## 已安装用户升级到 V1.1
+
+```bash
+cd ~/.openclaw/workspace/skills/daily-investment-tech-brief && git pull --ff-only && python3 -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+升级后直接做真实数据验收：
+
+```bash
+python3 scripts/fetch_market_data.py --pretty > /tmp/brief-data.json && python3 - <<'PY'
+import json
+p=json.load(open('/tmp/brief-data.json', encoding='utf-8'))
+print('collector:', p.get('meta', {}).get('collector'))
+print('market sources:', p.get('meta', {}).get('market_sources'))
+print('fund flow sources:', p.get('meta', {}).get('fund_flow_sources'))
+print('news:', len(p.get('news', [])))
+print('global indices:', len(p.get('market', {}).get('global_indices', [])))
+print('A indices:', len(p.get('market', {}).get('a_share_indices', [])))
+for k in ('今日','5日','10日'):
+    x=p.get('fund_flow', {}).get('industry', {}).get(k, {})
+    print(k, 'inflow:', len(x.get('top_inflow', [])), 'outflow:', len(x.get('top_outflow', [])))
+print('errors:', p.get('errors', []))
+PY
+```
+
+## V1.1 数据源自动降级
+
+上海服务器若遇到东方财富行情接口 `RemoteDisconnected/ConnectionError`，脚本会自动尝试：
+
+- A股指数：新浪 `stock_zh_index_spot_sina`
+- 美股核心指数：新浪 `index_us_stock_sina`（标普500/纳指/道指/纳斯达克100）
+- 行业资金流：同花顺 `stock_fund_flow_industry`（即时/5日排行/10日排行）
+
+查看实际用了哪个来源：JSON 的 `meta.market_sources` 和 `meta.fund_flow_sources`。
+
+## 1. 环境要求
 
 - 64 位 Linux
 - Python 3.8+（推荐 3.10 / 3.11）
 - OpenClaw 已正常运行
 
-## 单独测试数据脚本
+## 2. 安装 AKShare
+
+上海服务器建议直接使用国内 PyPI 镜像：
 
 ```bash
-python3 ~/.openclaw/workspace/skills/daily-investment-tech-brief/scripts/fetch_market_data.py --pretty > /tmp/brief-data.json
+python3 -m pip install -U akshare -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+或者：
+
+```bash
+python3 -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+## 3. 先单独测试数据脚本
+
+在本目录执行：
+
+```bash
+python3 scripts/fetch_market_data.py --pretty > /tmp/brief-data.json
+```
+
+确认 JSON：
+
+```bash
 python3 -m json.tool /tmp/brief-data.json >/dev/null && echo OK
 ```
 
-查看数据源状态：
+## 4. 安装到 OpenClaw
 
-```bash
-python3 - <<'PY'
-import json
-p=json.load(open('/tmp/brief-data.json', encoding='utf-8'))
-print('news:', len(p.get('news', [])))
-print('global indices:', len(p.get('market', {}).get('global_indices', [])))
-print('A indices:', len(p.get('market', {}).get('a_share_indices', [])))
-print('today inflow:', len(p.get('fund_flow', {}).get('industry', {}).get('今日', {}).get('top_inflow', [])))
-print('errors:', p.get('errors', []))
-PY
+如果按一键安装命令安装，目录已经位于：
+
+```text
+~/.openclaw/workspace/skills/daily-investment-tech-brief
 ```
 
-只要不是所有接口都失败，Skill 仍可降级生成晨报。
+检查：
 
-## 调用
+```bash
+openclaw skills list
+openclaw skills info daily-investment-tech-brief
+```
+
+如当前会话没有刷新 Skill，开启一个新会话或重启 gateway：
+
+```bash
+openclaw gateway restart
+```
+
+## 5. 调用
 
 在 OpenClaw 聊天中直接说：
 
@@ -78,23 +126,31 @@ PY
 /skill daily-investment-tech-brief
 ```
 
-## 数据源（V1）
+## 6. 数据源（V1.1）
 
-通过 AKShare 获取：
+新闻：
 
 - 东方财富全球财经快讯 `stock_info_global_em`
 - 财联社重点电报 `stock_info_global_cls`
 - 新浪财经全球快讯 `stock_info_global_sina`
-- 全球指数 `index_global_spot_em`
-- A 股主要指数 `stock_zh_index_spot_em`
-- 行业资金流 `stock_sector_fund_flow_rank`（今日 / 5日 / 10日）
 
-V1 不依赖 Google、ChatGPT、Cloudflare 或海外 VPS。
+行情：
 
-## 注意
+- 全球指数优先：东方财富 `index_global_spot_em`
+- 全球指数降级：新浪 `index_us_stock_sina`
+- A股指数优先：东方财富 `stock_zh_index_spot_em`
+- A股指数降级：新浪 `stock_zh_index_spot_sina`
 
-- AKShare 的上游网页接口可能变化，建议定期升级 AKShare。
+行业资金流：
+
+- 优先：东方财富 `stock_sector_fund_flow_rank`
+- 降级：同花顺 `stock_fund_flow_industry`
+
+V1.1 不依赖 Google、ChatGPT、Cloudflare 或海外 VPS。
+
+## 7. 注意
+
+- AKShare 的上游网页接口可能变化，因此“代码测试通过”不等于“服务器真实网络一定可用”，上线前必须执行真实数据验收命令。
 - 行业“主力资金流”是数据供应商按成交特征统计出的指标，不是交易所官方资金进出统计。
 - 本 Skill 不绑定模型，使用 OpenClaw 当前已配置的模型。
-- V1 不单独分析科大讯飞，也不包含无线电/空间天气模块。
-- 本项目用于研究与信息整理，不构成证券投资建议。
+- 不单独分析科大讯飞，也不包含无线电/空间天气模块。
