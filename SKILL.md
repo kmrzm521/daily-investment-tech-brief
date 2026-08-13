@@ -4,7 +4,7 @@ description: 生成每日投资科技晨报，覆盖全球/A股资讯、主要�
 user-invocable: true
 ---
 
-# 每日投资科技晨报 V1
+# 每日投资科技晨报 V1.1
 
 当用户要求“每日投资科技晨报”“今天的投资晨报”“全球+A股资讯”“今日板块资金流分析”或含义相近的任务时，使用本 Skill。
 
@@ -12,7 +12,7 @@ user-invocable: true
 
 在中国大陆上海服务器环境中，以国内可访问的数据源为基础，生成一份稳定、简洁、可执行的中文投资科技晨报。
 
-V1 不依赖 Google、ChatGPT、海外 VPS 或 Cloudflare。
+V1.1 不依赖 Google、ChatGPT、海外 VPS 或 Cloudflare。行情与资金流采用多数据源自动降级：东方财富优先；A股指数失败时切新浪，美股核心指数失败时切新浪，行业资金流失败时切同花顺。
 
 ## 第一步：获取证据数据
 
@@ -31,9 +31,9 @@ python {baseDir}/scripts/fetch_market_data.py --pretty
 脚本返回 JSON，主要字段：
 
 - `news`: 东方财富全球财经快讯、财联社重点电报、新浪全球财经快讯经过统一和去重后的资讯。
-- `market.global_indices`: 主要全球指数行情快照。
-- `market.a_share_indices`: 主要 A 股指数行情快照。
-- `fund_flow.industry.今日`: 行业今日主力资金流前列/后列。
+- `market.global_indices`: 主要全球指数行情快照；东财失败时至少降级到新浪的标普500、纳指、道指、纳斯达克100。
+- `market.a_share_indices`: 主要 A 股指数行情快照；东财失败时自动改用新浪。
+- `fund_flow.industry.今日`: 行业今日主力资金流前列/后列；东财失败时自动改用同花顺“即时”行业资金流。
 - `fund_flow.industry.5日`: 行业 5 日主力资金流前列/后列。
 - `fund_flow.industry.10日`: 行业 10 日主力资金流前列/后列。
 - `fund_flow.hints`: 今日、5日、10日同时出现在前列或后列的持续性线索。
