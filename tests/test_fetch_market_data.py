@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -56,6 +57,41 @@ class FakeAK:
         ])
 
 
+class EastmoneyMarketBroken(FakeAK):
+    def index_global_spot_em(self):
+        raise ConnectionError("eastmoney global blocked")
+
+    def stock_zh_index_spot_em(self, symbol="沪深重要指数"):
+        raise ConnectionError("eastmoney a-index blocked")
+
+    def stock_sector_fund_flow_rank(self, indicator="今日", sector_type="行业资金流"):
+        raise ConnectionError("eastmoney fund-flow blocked")
+
+    def stock_zh_index_spot_sina(self):
+        return pd.DataFrame([
+            {"代码": "sh000001", "名称": "上证指数", "最新价": 4010.0, "涨跌幅": 0.6},
+            {"代码": "sz399006", "名称": "创业板指", "最新价": 2600.0, "涨跌幅": -0.3},
+        ])
+
+    def index_us_stock_sina(self, symbol=".INX"):
+        base = {".INX": 6000.0, ".IXIC": 20000.0, ".DJI": 45000.0, ".NDX": 22000.0}[symbol]
+        return pd.DataFrame([
+            {"date": "2026-08-11", "open": base-20, "high": base+10, "low": base-30, "close": base-10, "volume": 100, "amount": 1000},
+            {"date": "2026-08-12", "open": base-5, "high": base+20, "low": base-15, "close": base, "volume": 120, "amount": 1200},
+        ])
+
+    def stock_fund_flow_industry(self, symbol="即时"):
+        if symbol == "即时":
+            return pd.DataFrame([
+                {"行业": "半导体", "行业指数": 1000.0, "行业-涨跌幅": 2.5, "流入资金": 80.0, "流出资金": 50.0, "净额": 30.0, "领涨股": "A公司"},
+                {"行业": "银行", "行业指数": 800.0, "行业-涨跌幅": -1.1, "流入资金": 20.0, "流出资金": 60.0, "净额": -40.0, "领涨股": "B公司"},
+            ])
+        return pd.DataFrame([
+            {"行业": "半导体", "行业指数": 1000.0, "阶段涨跌幅": "6.5%", "流入资金": 100.0, "流出资金": 70.0, "净额": 30.0},
+            {"行业": "银行", "行业指数": 800.0, "阶段涨跌幅": "-3.2%", "流入资金": 30.0, "流出资金": 70.0, "净额": -40.0},
+        ])
+
+
 class BrokenCLS(FakeAK):
     def stock_info_global_cls(self, symbol="重点"):
         raise RuntimeError("temporary failure")
@@ -83,6 +119,20 @@ class CollectorTests(unittest.TestCase):
         result = mod.normalize_fund_flow(df, "今日", top_n=5)
         self.assertEqual(result["top_inflow"][0]["main_net_inflow_yi"], 30.0)
         self.assertEqual(result["top_outflow"][0]["main_net_inflow_yi"], -40.0)
+
+    def test_eastmoney_market_failures_fall_back_to_sina_and_ths(self):
+        payload = mod.finalize_payload(mod.fetch_all(EastmoneyMarketBroken(), news_limit=20, fund_top_n=5))
+        self.assertEqual(payload["market"]["a_share_indices"][0]["名称"], "上证指数")
+        self.assertTrue(any(x["名称"] == "标普500" for x in payload["market"]["global_indices"]))
+        self.assertEqual(payload["fund_flow"]["industry"]["今日"]["top_inflow"][0]["sector"], "半导体")
+        self.assertEqual(payload["fund_flow"]["industry"]["今日"]["top_inflow"][0]["main_net_inflow_yi"], 30.0)
+        self.assertEqual(payload["meta"]["market_sources"]["a_share_indices"], "sina")
+        self.assertEqual(payload["meta"]["fund_flow_sources"]["今日"], "tonghuashun")
+
+    def test_ths_multi_day_percent_strings_are_normalized(self):
+        result = mod.normalize_fund_flow_ths(EastmoneyMarketBroken().stock_fund_flow_industry("5日排行"), "5日", top_n=5)
+        self.assertEqual(result["top_inflow"][0]["change_pct"], 6.5)
+        self.assertEqual(result["top_outflow"][0]["change_pct"], -3.2)
 
 
 if __name__ == "__main__":
